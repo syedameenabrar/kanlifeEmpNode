@@ -9,7 +9,7 @@ exports.addSchedule = async (req, res) => {
       organizationName, organizationId, employeeId, employeeName,
       unitSlNo, unitId, techName, clinicName, doctorName,
       noOfPatients, noOfPatientsLsm, noOfPatientsCap,
-      selectedTime, createdBy
+      selectedTime, createdBy, cityName
     } = req.body;
 
     const schedule = new Scheduleing({
@@ -26,7 +26,8 @@ exports.addSchedule = async (req, res) => {
       noOfPatientsLsm,
       noOfPatientsCap,
       selectedTime,
-      createdBy
+      createdBy,
+      cityName
     });
 
     await schedule.save();

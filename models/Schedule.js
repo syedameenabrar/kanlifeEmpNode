@@ -15,6 +15,7 @@ const scheduleSchema = new mongoose.Schema({
   noOfPatientsCap: { type: String },
   selectedTime: { type: String },
   createdBy: {type: String},
+  cityName: {type: String},
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
