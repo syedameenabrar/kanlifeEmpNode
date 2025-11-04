@@ -32,7 +32,7 @@ router.post('/admin/signup', async (req, res) => {
 // ✅ Admin adds Employee
 router.post('/admin/add-employee', async (req, res) => {
   try {
-    const { name, email, phone, password } = req.body;
+    const { name, email, phone, password, empType } = req.body;
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const employee = new Employee({
@@ -40,7 +40,8 @@ router.post('/admin/add-employee', async (req, res) => {
       email,
       phone,
       password: hashedPassword,
-      accountType: 'employee'
+      accountType: 'employee',
+      empType
     });
 
     await employee.save();
@@ -114,6 +115,7 @@ router.post('/login', async (req, res) => {
       email: user?.email || null,
       phone: user?.phone || null,
       accountType: user?.accountType,
+      empType: user?.empType,
       profileImage: user?.profileImage || null,
       createdAt: user?.createdAt,
       updatedAt: user?.updatedAt,
