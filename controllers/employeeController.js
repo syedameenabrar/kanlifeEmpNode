@@ -86,6 +86,7 @@ exports.loginEmployee = async (req, res) => {
         phone: employee.phone,
         email: employee.email,
         accountType: employee.accountType,
+      empType: user?.empType,
       }
     });
   } catch (err) {
