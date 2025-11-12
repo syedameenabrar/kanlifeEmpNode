@@ -48,7 +48,7 @@ exports.addSchedule = async (req, res) => {
  */
 exports.getAllSchedules = async (req, res) => {
   try {
-    const schedules = await Scheduleing.find().sort({ selectedTime: -1 });
+    const schedules = await Scheduleing.find().sort({ createdAt: -1 });
     res.status(200).json(schedules);
   } catch (error) {
     console.error('Error fetching schedules:', error);
@@ -140,7 +140,16 @@ exports.getFilteredSchedules = async (req, res) => {
     const filter = {};
 
     if (organizationId) filter.organizationId = organizationId;
-    if (employeeId) filter.employeeId = employeeId;
+       // 👥 Handle multiple employee IDs (comma-separated)
+       if (employeeId) {
+        const employeeIds = employeeId
+          .split(',')
+          .map(id => id.trim())
+          .filter(id => id); // remove empty strings
+        if (employeeIds.length > 0) {
+          filter.employeeId = { $in: employeeIds };
+        }
+      }
 
     if (startDate || endDate) {
       const range = {};
