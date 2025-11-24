@@ -136,44 +136,47 @@ exports.getSchedulesByOrganizationId = async (req, res) => {
  */
 exports.getFilteredSchedules = async (req, res) => {
   try {
-    const { organizationId, employeeId, startDate, endDate } = req.query;
+    const { organizationId, employeeId, startDate, endDate, cityName } = req.query;
     const filter = {};
 
     if (organizationId) filter.organizationId = organizationId;
-       // 👥 Handle multiple employee IDs (comma-separated)
-       if (employeeId) {
-        const employeeIds = employeeId
-          .split(',')
-          .map(id => id.trim())
-          .filter(id => id); // remove empty strings
-        if (employeeIds.length > 0) {
-          filter.employeeId = { $in: employeeIds };
-        }
-      }
 
+    // 👥 Handle multiple employee IDs
+    if (employeeId) {
+      const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
+      if (employeeIds.length > 0) filter.employeeId = { $in: employeeIds };
+    }
+
+    // 🌆 Handle multiple city filters
+    if (cityName) {
+      const cities = cityName.split(',').map(c => c.trim()).filter(Boolean);
+      if (cities.length > 0) {
+        filter.$or = cities.map(c => ({
+          cityName: { $regex: new RegExp(`^${c}$`, 'i') } // case-insensitive exact match
+        }));
+      }
+    }
+    
+
+    // 📅 Handle date range
     if (startDate || endDate) {
       const range = {};
-
       if (startDate) {
         const start = new Date(startDate);
         start.setHours(0, 0, 0, 0);
         range.$gte = start;
       }
-
       if (endDate) {
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
         range.$lte = end;
       }
-
-      // Use createdAt for your sample object
       filter.createdAt = range;
     }
 
-    console.log('📅 Filter query:', JSON.stringify(filter, null, 2));
+    console.log('📅 Final Filter Query:', JSON.stringify(filter, null, 2));
 
     const schedules = await Scheduleing.find(filter).sort({ createdAt: -1 });
-
     res.status(200).json(schedules);
   } catch (error) {
     console.error('Error fetching filtered schedules:', error);
