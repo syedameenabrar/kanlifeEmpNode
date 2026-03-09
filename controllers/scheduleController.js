@@ -186,3 +186,34 @@ exports.getFilteredSchedules = async (req, res) => {
 };
 
 
+/**
+ * Delete schedule by ID
+ */
+exports.deleteSchedule = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deletedSchedule = await Scheduleing.findByIdAndDelete(id);
+
+    if (!deletedSchedule) {
+      return res.status(404).json({
+        message: "Schedule not found",
+        status: "error"
+      });
+    }
+
+    res.status(200).json({
+      message: "Schedule deleted successfully",
+      status: "success",
+      schedule: deletedSchedule
+    });
+
+  } catch (error) {
+    console.error("Error deleting schedule:", error);
+    res.status(500).json({
+      message: "Server error while deleting schedule",
+      error: error.message
+    });
+  }
+};
+

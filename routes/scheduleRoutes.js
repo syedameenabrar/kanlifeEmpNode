@@ -1,5 +1,5 @@
 const express = require('express');
-const { addSchedule, getAllSchedules, getScheduleById, updatePpeSchedule , getSchedulesByEmployeeId, getSchedulesByOrganizationId, getFilteredSchedules} = require('../controllers/scheduleController');
+const { addSchedule, getAllSchedules, getScheduleById, updatePpeSchedule , getSchedulesByEmployeeId, getSchedulesByOrganizationId, getFilteredSchedules, deleteSchedule} = require('../controllers/scheduleController');
 const router = express.Router();
 
 // Admin adds schedule
@@ -22,7 +22,7 @@ router.get('/employee/:employeeId', getSchedulesByEmployeeId);
 // 🔹 New route: fetch schedules for specific organization
 router.get('/organization/:organizationId', getSchedulesByOrganizationId);
 
-
+router.delete('/:id', deleteSchedule);
 
 
 
