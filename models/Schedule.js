@@ -17,6 +17,7 @@ const scheduleSchema = new mongoose.Schema({
   createdBy: {type: String},
   cityName: {type: String},
   clinicAddress: { type: String },
+  ppeDate: {type: Date},
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
