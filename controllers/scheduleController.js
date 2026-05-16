@@ -151,14 +151,32 @@ exports.getFilteredSchedules = async (req, res) => {
     }
 
     // 🌆 Handle multiple city filters
+    // if (cityName) {
+    //   const cities = cityName.split(',').map(c => c.trim()).filter(Boolean);
+    //   if (cities.length > 0) {
+    //     filter.$or = cities.map(c => ({
+    //       cityName: { $regex: new RegExp(`^${c}$`, 'i') } // case-insensitive exact match
+    //     }));
+    //   }
+    // }
+
     if (cityName) {
-      const cities = cityName.split(',').map(c => c.trim()).filter(Boolean);
-      if (cities.length > 0) {
-        filter.$or = cities.map(c => ({
-          cityName: { $regex: new RegExp(`^${c}$`, 'i') } // case-insensitive exact match
-        }));
-      }
-    }
+
+  const cities = cityName
+    .split(',')
+    .map(c => c.trim())
+    .filter(Boolean);
+
+  if (cities.length > 0) {
+
+    filter.cityName = {
+      $in: cities.map(
+        c => new RegExp(`^\\s*${c}\\s*$`, 'i')
+      )
+    };
+
+  }
+}
     
 
     // 📅 Handle date range
