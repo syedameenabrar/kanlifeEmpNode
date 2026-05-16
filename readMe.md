@@ -45,5 +45,5 @@ Login (with email or phone)
 POST /api/auth/login
 {
   "identifier": "9535640137",  // OR "john@example.com"
-  "password": "oRqVeLzl"
+  "password": "$6PvDOhI"
 }

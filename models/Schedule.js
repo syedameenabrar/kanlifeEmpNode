@@ -13,6 +13,7 @@ const scheduleSchema = new mongoose.Schema({
   noOfPatients: { type: String },
   noOfPatientsLsm: { type: String },
   noOfPatientsCap: { type: String },
+  noOfPrescriptions: { type: String },
   selectedTime: { type: String },
   createdBy: {type: String},
   cityName: {type: String},

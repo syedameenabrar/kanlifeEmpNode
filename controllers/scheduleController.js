@@ -8,7 +8,7 @@ exports.addSchedule = async (req, res) => {
     const {
       organizationName, organizationId, employeeId, employeeName,
       unitSlNo, unitId, techName, clinicName, doctorName,
-      noOfPatients, noOfPatientsLsm, noOfPatientsCap,
+      noOfPatients, noOfPatientsLsm, noOfPatientsCap, noOfPrescriptions,
       selectedTime, createdBy, cityName,clinicAddress, ppeDate
     } = req.body;
 
@@ -25,6 +25,7 @@ exports.addSchedule = async (req, res) => {
       noOfPatients,
       noOfPatientsLsm,
       noOfPatientsCap,
+      noOfPrescriptions,
       selectedTime,
       createdBy,
       cityName,
