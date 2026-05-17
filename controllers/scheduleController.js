@@ -139,66 +139,154 @@ exports.getSchedulesByOrganizationId = async (req, res) => {
  */
 exports.getFilteredSchedules = async (req, res) => {
   try {
-    const { organizationId, employeeId, startDate, endDate, cityName } = req.query;
+    const {
+      organizationId,
+      employeeId,
+      startDate,
+      endDate,
+      cityName,
+      search,          // ✅ ADD THIS
+      page = 1,
+      limit = 20
+    } = req.query;
+
     const filter = {};
 
-    if (organizationId) filter.organizationId = organizationId;
-
-    // 👥 Handle multiple employee IDs
-    if (employeeId) {
-      const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
-      if (employeeIds.length > 0) filter.employeeId = { $in: employeeIds };
+    // Organization
+    if (organizationId) {
+      filter.organizationId = organizationId;
     }
 
-    // 🌆 Handle multiple city filters
-    // if (cityName) {
-    //   const cities = cityName.split(',').map(c => c.trim()).filter(Boolean);
-    //   if (cities.length > 0) {
-    //     filter.$or = cities.map(c => ({
-    //       cityName: { $regex: new RegExp(`^${c}$`, 'i') } // case-insensitive exact match
-    //     }));
-    //   }
-    // }
+    // Employee
+    if (employeeId) {
+      const employeeIds = employeeId.split(',').map(id => id.trim());
+      filter.employeeId = { $in: employeeIds };
+    }
 
+    // City
     if (cityName) {
+      const cities = cityName.split(',').map(c => c.trim());
+      filter.cityName = {
+        $in: cities.map(c => new RegExp(`^\\s*${c}\\s*$`, 'i'))
+      };
+    }
 
-  const cities = cityName
-    .split(',')
-    .map(c => c.trim())
-    .filter(Boolean);
-
-  if (cities.length > 0) {
-
-    filter.cityName = {
-      $in: cities.map(
-        c => new RegExp(`^\\s*${c}\\s*$`, 'i')
-      )
-    };
-
-  }
-}
-    
-
-    // 📅 Handle date range
+    // Date range
     if (startDate || endDate) {
       const range = {};
+
       if (startDate) {
         const start = new Date(startDate);
         start.setHours(0, 0, 0, 0);
         range.$gte = start;
       }
+
       if (endDate) {
         const end = new Date(endDate);
         end.setHours(23, 59, 59, 999);
         range.$lte = end;
       }
-      filter.createdAt = range;
+
+      filter.ppeDate = range;
     }
 
-    console.log('📅 Final Filter Query:', JSON.stringify(filter, null, 2));
+    // 🔥 SEARCH (IMPORTANT FIX)
+    if (search && search.trim()) {
+      const regex = new RegExp(search.trim(), 'i');
 
-    const schedules = await Scheduleing.find(filter).sort({ createdAt: -1 });
-    res.status(200).json(schedules);
+      filter.$or = [
+        { clinicName: regex },
+        { doctorName: regex },
+        { cityName: regex },
+        { clinicAddress: regex },
+        { employeeName: regex },
+        { organizationName: regex }
+      ];
+    }
+
+    const pageNumber = parseInt(page);
+    const pageSize = parseInt(limit);
+    const skip = (pageNumber - 1) * pageSize;
+
+    const [schedules, total, summary] = await Promise.all([
+      Scheduleing.find(filter)
+        .sort({ ppeDate: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+
+      Scheduleing.countDocuments(filter),
+
+      Scheduleing.aggregate([
+  { $match: filter },
+  {
+    $group: {
+      _id: null,
+
+      totalPatients: {
+        $sum: {
+          $convert: {
+            input: "$noOfPatients",
+            to: "double",
+            onError: 0,
+            onNull: 0
+          }
+        }
+      },
+
+      totalPatientsLsm: {
+        $sum: {
+          $convert: {
+            input: "$noOfPatientsLsm",
+            to: "double",
+            onError: 0,
+            onNull: 0
+          }
+        }
+      },
+
+      totalPatientsCap: {
+        $sum: {
+          $convert: {
+            input: "$noOfPatientsCap",
+            to: "double",
+            onError: 0,
+            onNull: 0
+          }
+        }
+      },
+
+      totalPrescriptions: {
+        $sum: {
+          $convert: {
+            input: "$noOfPrescriptions",
+            to: "double",
+            onError: 0,
+            onNull: 0
+          }
+        }
+      }
+    }
+  }
+])
+    ]);
+
+    res.status(200).json({
+      data: schedules,
+      pagination: {
+        total,
+        page: pageNumber,
+        limit: pageSize,
+        totalPages: Math.ceil(total / pageSize)
+      },
+      summary: {
+        totalPatients: summary?.[0]?.totalPatients || 0,
+        totalPatientsLsm: summary?.[0]?.totalPatientsLsm || 0,
+        totalPatientsCap: summary?.[0]?.totalPatientsCap || 0,
+        totalPrescriptions: summary?.[0]?.totalPrescriptions || 0
+      }
+    });
+
   } catch (error) {
     console.error('Error fetching filtered schedules:', error);
     res.status(500).json({ message: 'Server error while fetching schedules' });
