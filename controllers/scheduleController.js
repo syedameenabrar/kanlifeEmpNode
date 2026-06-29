@@ -232,68 +232,93 @@ if (doctorSpeciality) {
     const pageSize = parseInt(limit);
     const skip = (pageNumber - 1) * pageSize;
 
-    const [schedules, total, summary] = await Promise.all([
-      Scheduleing.find(filter)
-        .sort({ ppeDate: -1 })
-        .skip(skip)
-        .limit(pageSize)
-        .lean(),
+const [schedules, total, summary] = await Promise.all([
+  Scheduleing.find(filter)
+    .sort({ ppeDate: -1 })
+    .skip(skip)
+    .limit(pageSize)
+    .lean(),
 
-      Scheduleing.countDocuments(filter),
+  Scheduleing.countDocuments(filter),
 
-      Scheduleing.aggregate([
-  { $match: filter },
-  {
-    $group: {
-      _id: null,
+  Scheduleing.aggregate([
+    { $match: filter },
 
-      totalPatients: {
-        $sum: {
-          $convert: {
-            input: "$noOfPatients",
-            to: "double",
-            onError: 0,
-            onNull: 0
+    {
+      $group: {
+        _id: null,
+
+        totalPatients: {
+          $sum: {
+            $convert: {
+              input: "$noOfPatients",
+              to: "double",
+              onError: 0,
+              onNull: 0
+            }
           }
-        }
-      },
+        },
 
-      totalPatientsLsm: {
-        $sum: {
-          $convert: {
-            input: "$noOfPatientsLsm",
-            to: "double",
-            onError: 0,
-            onNull: 0
+        totalPatientsLsm: {
+          $sum: {
+            $convert: {
+              input: "$noOfPatientsLsm",
+              to: "double",
+              onError: 0,
+              onNull: 0
+            }
           }
-        }
-      },
+        },
 
-      totalPatientsCap: {
-        $sum: {
-          $convert: {
-            input: "$noOfPatientsCap",
-            to: "double",
-            onError: 0,
-            onNull: 0
+        totalPatientsCap: {
+          $sum: {
+            $convert: {
+              input: "$noOfPatientsCap",
+              to: "double",
+              onError: 0,
+              onNull: 0
+            }
           }
-        }
-      },
+        },
 
-      totalPrescriptions: {
-        $sum: {
-          $convert: {
-            input: "$noOfPrescriptions",
-            to: "double",
-            onError: 0,
-            onNull: 0
+        totalPrescriptions: {
+          $sum: {
+            $convert: {
+              input: "$noOfPrescriptions",
+              to: "double",
+              onError: 0,
+              onNull: 0
+            }
           }
+        },
+
+        uniqueDoctors: {
+  $addToSet: {
+    $trim: {
+      input: {
+        $replaceAll: {
+          input: { $toLower: "$doctorName" },
+          find: "  ",
+          replacement: " "
         }
       }
     }
   }
-])
-    ]);
+}
+      }
+    },
+
+    {
+      $project: {
+        totalPatients: 1,
+        totalPatientsLsm: 1,
+        totalPatientsCap: 1,
+        totalPrescriptions: 1,
+        totalDoctors: { $size: "$uniqueDoctors" }
+      }
+    }
+  ])
+]);
 
     res.status(200).json({
       data: schedules,
@@ -307,7 +332,8 @@ if (doctorSpeciality) {
         totalPatients: summary?.[0]?.totalPatients || 0,
         totalPatientsLsm: summary?.[0]?.totalPatientsLsm || 0,
         totalPatientsCap: summary?.[0]?.totalPatientsCap || 0,
-        totalPrescriptions: summary?.[0]?.totalPrescriptions || 0
+        totalPrescriptions: summary?.[0]?.totalPrescriptions || 0,
+        totalDoctors: summary?.[0]?.totalDoctors || 0
       }
     });
 
