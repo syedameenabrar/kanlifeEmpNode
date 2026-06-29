@@ -11,7 +11,8 @@ const employeeSchema = new mongoose.Schema({
   ppeEquipmentSlNo: {type:String},
   ppeEquipmentType: { type: String},
 
-
+state: { type: String },
+city: { type: String },
 
   // Future fields
   salary: { type: Number, default: 0 },

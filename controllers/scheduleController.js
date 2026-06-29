@@ -9,7 +9,8 @@ exports.addSchedule = async (req, res) => {
       organizationName, organizationId, employeeId, employeeName,
       unitSlNo, unitId, techName, clinicName, doctorName,
       noOfPatients, noOfPatientsLsm, noOfPatientsCap, noOfPrescriptions,
-      selectedTime, createdBy, cityName,clinicAddress, ppeDate
+      selectedTime, createdBy, cityName,clinicAddress, ppeDate, doctorSpeciality,
+  state
     } = req.body;
 
     const schedule = new Scheduleing({
@@ -30,7 +31,9 @@ exports.addSchedule = async (req, res) => {
       createdBy,
       cityName,
       clinicAddress,
-      ppeDate
+      ppeDate,
+      doctorSpeciality,
+  state
     });
 
     await schedule.save();
@@ -142,6 +145,8 @@ exports.getFilteredSchedules = async (req, res) => {
     const {
       organizationId,
       employeeId,
+      doctorSpeciality,
+  state,
       startDate,
       endDate,
       cityName,
@@ -191,18 +196,37 @@ exports.getFilteredSchedules = async (req, res) => {
     }
 
     // 🔥 SEARCH (IMPORTANT FIX)
-    if (search && search.trim()) {
-      const regex = new RegExp(search.trim(), 'i');
+ if (search && search.trim()) {
+  const regex = new RegExp(search.trim(), 'i');
 
-      filter.$or = [
-        { clinicName: regex },
-        { doctorName: regex },
-        { cityName: regex },
-        { clinicAddress: regex },
-        { employeeName: regex },
-        { organizationName: regex }
-      ];
-    }
+  filter.$or = [
+    { clinicName: regex },
+    { doctorName: regex },
+    { doctorSpeciality: regex }, // NEW
+    { cityName: regex },
+    { state: regex },            // NEW
+    { clinicAddress: regex },
+    { employeeName: regex },
+    { organizationName: regex }
+  ];
+}
+
+    if (state) {
+  const states = state.split(',').map(s => s.trim());
+
+  filter.state = {
+    $in: states.map(s => new RegExp(`^\\s*${s}\\s*$`, 'i'))
+  };
+}
+
+// Doctor Speciality
+if (doctorSpeciality) {
+  const specialities = doctorSpeciality.split(',').map(s => s.trim());
+
+  filter.doctorSpeciality = {
+    $in: specialities.map(s => new RegExp(`^\\s*${s}\\s*$`, 'i'))
+  };
+}
 
     const pageNumber = parseInt(page);
     const pageSize = parseInt(limit);

@@ -5,7 +5,7 @@ const Employee = require('../models/Employee');
 // Add new employee (Admin creates)
 exports.addEmployee = async (req, res) => {
   try {
-    const { name, phone, email, password, empType, organizationId, ppeEquipmentId, ppeEquipmentSlNo, organizationName , ppeEquipmentType} = req.body;
+    const { name, phone, email, password, empType, organizationId, ppeEquipmentId, ppeEquipmentSlNo, organizationName , ppeEquipmentType, state, city} = req.body;
 
     // Auto-generate password (8 chars random)
     // const rawPassword = Math.random().toString(36).slice(-8);
@@ -23,7 +23,9 @@ exports.addEmployee = async (req, res) => {
       ppeEquipmentId,
       ppeEquipmentSlNo,
       ppeEquipmentType,
-      organizationName
+      organizationName,
+      state,
+  city
     });
 
     await employee.save();
@@ -86,7 +88,7 @@ exports.loginEmployee = async (req, res) => {
         phone: employee.phone,
         email: employee.email,
         accountType: employee.accountType,
-      empType: user?.empType,
+      empType: employee?.empType,
       }
     });
   } catch (err) {

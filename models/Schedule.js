@@ -15,7 +15,9 @@ const scheduleSchema = new mongoose.Schema({
 
   clinicName: { type: String, trim: true },
   doctorName: { type: String, trim: true },
+doctorSpeciality: { type: String, trim: true },
 
+state: { type: String, trim: true },
   noOfPatients: { type: Number, default: 0 },
   noOfPatientsLsm: { type: Number, default: 0 },
   noOfPatientsCap: { type: Number, default: 0 },
@@ -40,15 +42,19 @@ const scheduleSchema = new mongoose.Schema({
 scheduleSchema.index({ employeeId: 1 });
 scheduleSchema.index({ organizationId: 1 });
 scheduleSchema.index({ cityName: 1 });
+scheduleSchema.index({ state: 1 });
 scheduleSchema.index({ ppeDate: -1 });
 scheduleSchema.index({ createdAt: -1 });
+scheduleSchema.index({ doctorSpeciality: 1 });
 
 // Compound index
 scheduleSchema.index({
   organizationId: 1,
   employeeId: 1,
   cityName: 1,
-  ppeDate: -1
+  state: 1,
+  doctorSpeciality: 1,
+  ppeDate: -1,
 });
 
 module.exports = mongoose.model('Schedule', scheduleSchema);

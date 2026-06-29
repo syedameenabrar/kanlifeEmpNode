@@ -123,8 +123,9 @@ router.post('/login', async (req, res) => {
       organizationName: user?.organizationName,
       ppeEquipmentSlNo: user?.ppeEquipmentSlNo,
       ppeEquipmentId: user?.ppeEquipmentId,
-      ppeEquipmentType: user?.ppeEquipmentType
-
+      ppeEquipmentType: user?.ppeEquipmentType,
+      state: user?.state,
+      city: user?.city
     };
 
     res.json({
