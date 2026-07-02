@@ -405,3 +405,67 @@ exports.deleteSchedule = async (req, res) => {
   }
 };
 
+
+/**
+ * Get unique clinic & doctor names for autocomplete
+ */
+exports.getAutocompleteData = async (req, res) => {
+  try {
+    const { employeeId, organizationId } = req.query;
+
+    const filter = {};
+
+    // Prefer employee-specific history
+    if (employeeId) {
+      filter.employeeId = employeeId;
+    } else if (organizationId) {
+      filter.organizationId = organizationId;
+    }
+
+    const data = await Scheduleing.aggregate([
+      {
+        $match: filter
+      },
+      {
+        $group: {
+          _id: null,
+          clinicNames: {
+            $addToSet: {
+              $trim: { input: "$clinicName" }
+            }
+          },
+          doctorNames: {
+            $addToSet: {
+              $trim: { input: "$doctorName" }
+            }
+          },
+          doctorSpecialities: {
+            $addToSet: {
+              $trim: { input: "$doctorSpeciality" }
+            }
+          }
+        }
+      }
+    ]);
+
+    res.json({
+      clinicNames: (data[0]?.clinicNames || [])
+        .filter(Boolean)
+        .sort(),
+
+      doctorNames: (data[0]?.doctorNames || [])
+        .filter(Boolean)
+        .sort(),
+
+      doctorSpecialities: (data[0]?.doctorSpecialities || [])
+        .filter(Boolean)
+        .sort()
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      message: "Unable to fetch autocomplete data"
+    });
+  }
+};

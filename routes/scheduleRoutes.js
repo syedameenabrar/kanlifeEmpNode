@@ -1,5 +1,5 @@
 const express = require('express');
-const { addSchedule, getAllSchedules, getScheduleById, updatePpeSchedule , getSchedulesByEmployeeId, getSchedulesByOrganizationId, getFilteredSchedules, deleteSchedule} = require('../controllers/scheduleController');
+const { addSchedule, getAllSchedules, getScheduleById, updatePpeSchedule , getSchedulesByEmployeeId, getSchedulesByOrganizationId, getFilteredSchedules, deleteSchedule, getAutocompleteData} = require('../controllers/scheduleController');
 const router = express.Router();
 
 // Admin adds schedule
@@ -9,6 +9,8 @@ router.post('/add', addSchedule);
 router.get('/filter', getFilteredSchedules);
 // GET all schedule
 router.get('/', getAllSchedules);
+router.get('/autocomplete', getAutocompleteData);
+
 
 // GET single schedule by ID
 router.get('/:id', getScheduleById);
