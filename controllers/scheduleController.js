@@ -168,13 +168,52 @@ exports.getFilteredSchedules = async (req, res) => {
       filter.employeeId = { $in: employeeIds };
     }
 
-    // City
-    if (cityName) {
-      const cities = cityName.split(',').map(c => c.trim());
-      filter.cityName = {
-        $in: cities.map(c => new RegExp(`^\\s*${c}\\s*$`, 'i'))
-      };
-    }
+const andConditions = [];
+
+if (cityName || state) {
+
+  const orConditions = [];
+
+  if (cityName) {
+    const cities = cityName
+      .split(',')
+      .map(c => c.trim())
+      .filter(Boolean);
+
+    cities.forEach(city => {
+      orConditions.push({
+        cityName: {
+          $regex: city,
+          $options: "i"
+        }
+      });
+    });
+  }
+
+  if (state) {
+    const states = state
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    states.forEach(st => {
+      orConditions.push({
+        state: {
+          $regex: `^${st}$`,
+          $options: "i"
+        }
+      });
+    });
+  }
+
+  andConditions.push({
+    $or: orConditions
+  });
+}
+
+if (andConditions.length) {
+  filter.$and = andConditions;
+}
 
     // Date range
     if (startDate || endDate) {
@@ -211,14 +250,6 @@ exports.getFilteredSchedules = async (req, res) => {
   ];
 }
 
-    if (state) {
-  const states = state.split(',').map(s => s.trim());
-
-  filter.state = {
-    $in: states.map(s => new RegExp(`^\\s*${s}\\s*$`, 'i'))
-  };
-}
-
 // Doctor Speciality
 if (doctorSpeciality) {
   const specialities = doctorSpeciality.split(',').map(s => s.trim());
@@ -231,7 +262,8 @@ if (doctorSpeciality) {
     const pageNumber = parseInt(page);
     const pageSize = parseInt(limit);
     const skip = (pageNumber - 1) * pageSize;
-
+console.log("REQ QUERY:", req.query);
+console.log("FILTER:", JSON.stringify(filter, null, 2));
 const [schedules, total, summary] = await Promise.all([
   Scheduleing.find(filter)
     .sort({ ppeDate: -1 })
