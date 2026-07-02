@@ -262,8 +262,6 @@ if (doctorSpeciality) {
     const pageNumber = parseInt(page);
     const pageSize = parseInt(limit);
     const skip = (pageNumber - 1) * pageSize;
-console.log("REQ QUERY:", req.query);
-console.log("FILTER:", JSON.stringify(filter, null, 2));
 const [schedules, total, summary] = await Promise.all([
   Scheduleing.find(filter)
     .sort({ ppeDate: -1 })
