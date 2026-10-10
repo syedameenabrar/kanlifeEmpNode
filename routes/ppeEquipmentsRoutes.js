@@ -1,5 +1,5 @@
 const express = require('express');
-const { addPpeEquipment, getAllPpeEquipments, getPpeEquipmentById, updatePpeEquipment } = require('../controllers/PpeEquipmentsController');
+const { addPpeEquipment, getAllPpeEquipments, getPpeEquipmentById, updatePpeEquipment, deletePpeEquipment } = require('../controllers/PpeEquipmentsController');
 const router = express.Router();
 
 // Admin adds PpeEquipment
@@ -13,6 +13,9 @@ router.get('/:id', getPpeEquipmentById);
 
 // ✅ Update PpeEquipment (use PUT or PATCH, not POST)
 router.put('/:id', updatePpeEquipment);
+
+// Delete PpeEquipment
+router.delete('/:id', deletePpeEquipment);
 
 
 

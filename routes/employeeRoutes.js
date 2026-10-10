@@ -1,5 +1,5 @@
 const express = require('express');
-const { addEmployee, loginEmployee, getAllEmployees, getEmployeeById, updateEmployee } = require('../controllers/employeeController');
+const { addEmployee, loginEmployee, getAllEmployees, getEmployeeById, updateEmployee, deleteEmployee } = require('../controllers/employeeController');
 const router = express.Router();
 
 // Admin adds employee
@@ -16,6 +16,9 @@ router.get('/:id', getEmployeeById);
 
 // ✅ Update employee (use PUT or PATCH, not POST)
 router.put('/:id', updateEmployee);
+
+// Delete employee
+router.delete('/:id', deleteEmployee);
 
 
 

@@ -69,3 +69,18 @@ exports.updatePpeEquipment = async (req, res) => {
       res.status(500).json({ error: err.message });
     }
   };
+
+// Delete PpeEquipment
+exports.deletePpeEquipment = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deletedPpeEquipment = await PpeEquipments.findByIdAndDelete(id);
+
+    if (!deletedPpeEquipment) return res.status(404).json({ error: 'Ppe Equipment not found' });
+
+    res.json({ message: 'Ppe Equipment deleted successfully', PpeEquipment: deletedPpeEquipment });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
