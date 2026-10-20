@@ -125,7 +125,8 @@ router.post('/login', async (req, res) => {
       ppeEquipmentId: user?.ppeEquipmentId,
       ppeEquipmentType: user?.ppeEquipmentType,
       state: user?.state,
-      city: user?.city
+      city: user?.city,
+      canViewInsights: user?.accountType === 'admin' || user?.accountType === 'sub-admin' ? true : !!user?.canViewInsights
     };
 
     res.json({

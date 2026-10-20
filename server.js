@@ -10,6 +10,8 @@ const attendanceRoutes = require('./routes/attendance');
 const organizationRoutes = require('./routes/organizationRoutes');
 const PpeEquipmentsRoutes = require('./routes/ppeEquipmentsRoutes');
 const scheduleRoutes = require('./routes/scheduleRoutes');
+const backupRoutes = require('./routes/backupRoutes');
+const { startBackupEmailScheduler } = require('./scheduler');
 
 
 
@@ -27,6 +29,7 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/organization', organizationRoutes);
 app.use('/api/equipment', PpeEquipmentsRoutes);
 app.use('/api/schedule', scheduleRoutes);
+app.use('/api/backup', backupRoutes);
 
 
 
@@ -35,5 +38,6 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb+srv://dhanya:dhanya@cluster0.
   .then(() => {
     console.log('MongoDB connected');
     app.listen(5000, () => console.log('Server running on port 5000'));
+    startBackupEmailScheduler();
   })
   .catch(err => console.error(err));

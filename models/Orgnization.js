@@ -9,6 +9,7 @@ const organizationSchema = new mongoose.Schema({
   profileImage: { type: String }, 
 
   accountType: { type: String, default: 'organization' },
+  canViewInsights: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

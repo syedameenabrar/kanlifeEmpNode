@@ -25,6 +25,7 @@ city: { type: String },
   profileImage: { type: String }, 
 
   accountType: { type: String, default: 'employee' },
+  canViewInsights: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

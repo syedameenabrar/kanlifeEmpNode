@@ -81,6 +81,7 @@ exports.loginOrganization = async (req, res) => {
         phone: organization.phone,
         email: organization.email,
         accountType: organization.accountType,
+        canViewInsights: organization.canViewInsights,
       }
     });
   } catch (err) {

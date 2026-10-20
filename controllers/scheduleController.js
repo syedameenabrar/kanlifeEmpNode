@@ -407,6 +407,370 @@ exports.deleteSchedule = async (req, res) => {
 
 
 /**
+ * Get distinct filter option lists (states, cities, specialities, years)
+ * for populating the analytics dashboard's filter dropdowns.
+ */
+exports.getScheduleFilterOptions = async (req, res) => {
+  try {
+    const [states, cities, specialities, yearsAgg] = await Promise.all([
+      Scheduleing.distinct('state'),
+      Scheduleing.distinct('cityName'),
+      Scheduleing.distinct('doctorSpeciality'),
+      Scheduleing.aggregate([
+        { $addFields: { _effectiveDate: { $ifNull: ['$ppeDate', '$createdAt'] } } },
+        { $group: { _id: { $year: '$_effectiveDate' } } },
+        { $sort: { _id: -1 } }
+      ])
+    ]);
+
+    res.json({
+      states: states.filter(Boolean).sort(),
+      cities: cities.filter(Boolean).sort(),
+      specialities: specialities.filter(Boolean).sort(),
+      years: yearsAgg.map(y => y._id).filter(Boolean)
+    });
+  } catch (err) {
+    console.error('Error fetching schedule filter options:', err);
+    res.status(500).json({ message: 'Unable to fetch filter options' });
+  }
+};
+
+/**
+ * Analytics for the dashboard: totals, monthly trend, geography (state/city)
+ * and leaderboards (doctors/employees/organizations/specialities).
+ *
+ * The monthly trend facet intentionally ignores the month/year/date filters
+ * (it always shows the last 12 months) so the trend chart stays visible for
+ * context while every other facet reflects the selected period - this is the
+ * standard "trend stays, drill-down filters" BI dashboard pattern.
+ */
+exports.getScheduleAnalytics = async (req, res) => {
+  try {
+    const {
+      organizationId,
+      employeeId,
+      doctorSpeciality,
+      state,
+      cityName,
+      search,
+      month,
+      year,
+      startDate,
+      endDate
+    } = req.query;
+
+    // Filters applied to every facet (geography/people/search, no date)
+    const baseMatch = {};
+
+    if (organizationId) {
+      baseMatch.organizationId = organizationId;
+    }
+
+    if (employeeId) {
+      const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
+      if (employeeIds.length) baseMatch.employeeId = { $in: employeeIds };
+    }
+
+    const andConditions = [];
+
+    const orConditions = [];
+    if (cityName) {
+      cityName.split(',').map(c => c.trim()).filter(Boolean).forEach(city => {
+        orConditions.push({ cityName: { $regex: city, $options: 'i' } });
+      });
+    }
+    if (state) {
+      state.split(',').map(s => s.trim()).filter(Boolean).forEach(st => {
+        orConditions.push({ state: { $regex: `^${st}$`, $options: 'i' } });
+      });
+    }
+    if (orConditions.length) andConditions.push({ $or: orConditions });
+
+    if (doctorSpeciality) {
+      const specialities = doctorSpeciality.split(',').map(s => s.trim()).filter(Boolean);
+      if (specialities.length) {
+        baseMatch.doctorSpeciality = {
+          $in: specialities.map(s => new RegExp(`^\\s*${s}\\s*$`, 'i'))
+        };
+      }
+    }
+
+    if (search && search.trim()) {
+      const regex = new RegExp(search.trim(), 'i');
+      andConditions.push({
+        $or: [
+          { clinicName: regex },
+          { doctorName: regex },
+          { doctorSpeciality: regex },
+          { cityName: regex },
+          { state: regex },
+          { clinicAddress: regex },
+          { employeeName: regex },
+          { organizationName: regex }
+        ]
+      });
+    }
+
+    if (andConditions.length) baseMatch.$and = andConditions;
+
+    // Date filter - month+year takes priority over a raw start/end range
+    let dateRange = {};
+    if (month && year) {
+      const y = parseInt(year, 10);
+      const m = parseInt(month, 10); // 1-12
+      dateRange = {
+        $gte: new Date(y, m - 1, 1, 0, 0, 0, 0),
+        $lte: new Date(y, m, 0, 23, 59, 59, 999)
+      };
+    } else if (startDate || endDate) {
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        dateRange.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        dateRange.$lte = end;
+      }
+    }
+    const hasDateFilter = Object.keys(dateRange).length > 0;
+    const dateMatchStage = hasDateFilter ? [{ $match: { _effectiveDate: dateRange } }] : [];
+
+    const numericField = name => ({
+      $convert: { input: `$${name}`, to: 'double', onError: 0, onNull: 0 }
+    });
+
+    const pipeline = [
+      {
+        $addFields: {
+          _effectiveDate: { $ifNull: ['$ppeDate', '$createdAt'] },
+          _patients: numericField('noOfPatients'),
+          _patientsLsm: numericField('noOfPatientsLsm'),
+          _patientsCap: numericField('noOfPatientsCap'),
+          _prescriptions: numericField('noOfPrescriptions')
+        }
+      },
+      { $match: baseMatch },
+      {
+        $facet: {
+          summary: [
+            ...dateMatchStage,
+            {
+              $group: {
+                _id: null,
+                totalVisits: { $sum: 1 },
+                totalPatients: { $sum: '$_patients' },
+                totalPatientsLsm: { $sum: '$_patientsLsm' },
+                totalPatientsCap: { $sum: '$_patientsCap' },
+                totalPrescriptions: { $sum: '$_prescriptions' },
+                uniqueDoctors: { $addToSet: { $toLower: { $trim: { input: '$doctorName' } } } },
+                uniqueClinics: { $addToSet: { $toLower: { $trim: { input: '$clinicName' } } } },
+                uniqueEmployees: { $addToSet: '$employeeId' },
+                uniqueStates: { $addToSet: { $toLower: { $trim: { input: '$state' } } } },
+                uniqueCities: { $addToSet: { $toLower: { $trim: { input: '$cityName' } } } }
+              }
+            },
+            {
+              $project: {
+                _id: 0,
+                totalVisits: 1,
+                totalPatients: 1,
+                totalPatientsLsm: 1,
+                totalPatientsCap: 1,
+                totalPrescriptions: 1,
+                totalDoctors: { $size: '$uniqueDoctors' },
+                totalClinics: { $size: '$uniqueClinics' },
+                totalEmployees: { $size: '$uniqueEmployees' },
+                totalStates: { $size: '$uniqueStates' },
+                totalCities: { $size: '$uniqueCities' }
+              }
+            }
+          ],
+
+          monthlyTrend: [
+            {
+              $group: {
+                _id: { year: { $year: '$_effectiveDate' }, month: { $month: '$_effectiveDate' } },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            { $sort: { '_id.year': -1, '_id.month': -1 } },
+            { $limit: 12 },
+            { $sort: { '_id.year': 1, '_id.month': 1 } },
+            {
+              $project: {
+                _id: 0,
+                year: '$_id.year',
+                month: '$_id.month',
+                visits: 1,
+                patients: 1,
+                prescriptions: 1
+              }
+            }
+          ],
+
+          byState: [
+            ...dateMatchStage,
+            { $match: { state: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$state' } } },
+                state: { $first: { $trim: { input: '$state' } } },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 15 },
+            { $project: { _id: 0, state: 1, visits: 1, patients: 1, prescriptions: 1 } }
+          ],
+
+          byCity: [
+            ...dateMatchStage,
+            { $match: { cityName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$cityName' } } },
+                city: { $first: { $trim: { input: '$cityName' } } },
+                state: { $first: '$state' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 20 },
+            { $project: { _id: 0, city: 1, state: 1, visits: 1, patients: 1, prescriptions: 1 } }
+          ],
+
+          topDoctors: [
+            ...dateMatchStage,
+            { $match: { doctorName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$doctorName' } } },
+                doctorName: { $first: '$doctorName' },
+                speciality: { $first: '$doctorSpeciality' },
+                clinicName: { $first: '$clinicName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 },
+            {
+              $project: {
+                _id: 0,
+                doctorName: 1,
+                speciality: 1,
+                clinicName: 1,
+                visits: 1,
+                patients: 1,
+                prescriptions: 1
+              }
+            }
+          ],
+
+          topEmployees: [
+            ...dateMatchStage,
+            { $match: { employeeName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$employeeId',
+                employeeName: { $first: '$employeeName' },
+                organizationName: { $first: '$organizationName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' },
+                uniqueDoctors: { $addToSet: { $toLower: { $trim: { input: '$doctorName' } } } }
+              }
+            },
+            {
+              $project: {
+                _id: 0,
+                employeeId: '$_id',
+                employeeName: 1,
+                organizationName: 1,
+                visits: 1,
+                patients: 1,
+                prescriptions: 1,
+                doctorsCovered: { $size: '$uniqueDoctors' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 }
+          ],
+
+          byOrganization: [
+            ...dateMatchStage,
+            { $match: { organizationName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$organizationName',
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 },
+            { $project: { _id: 0, organizationName: '$_id', visits: 1, patients: 1, prescriptions: 1 } }
+          ],
+
+          bySpeciality: [
+            ...dateMatchStage,
+            { $match: { doctorSpeciality: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$doctorSpeciality',
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 },
+            { $project: { _id: 0, speciality: '$_id', visits: 1, patients: 1 } }
+          ]
+        }
+      }
+    ];
+
+    const [result] = await Scheduleing.aggregate(pipeline);
+
+    res.status(200).json({
+      filters: { organizationId, employeeId, doctorSpeciality, state, cityName, search, month, year, startDate, endDate },
+      summary: result.summary[0] || {
+        totalVisits: 0,
+        totalPatients: 0,
+        totalPatientsLsm: 0,
+        totalPatientsCap: 0,
+        totalPrescriptions: 0,
+        totalDoctors: 0,
+        totalClinics: 0,
+        totalEmployees: 0,
+        totalStates: 0,
+        totalCities: 0
+      },
+      monthlyTrend: result.monthlyTrend,
+      byState: result.byState,
+      byCity: result.byCity,
+      topDoctors: result.topDoctors,
+      topEmployees: result.topEmployees,
+      byOrganization: result.byOrganization,
+      bySpeciality: result.bySpeciality
+    });
+  } catch (error) {
+    console.error('Error building schedule analytics:', error);
+    res.status(500).json({ message: 'Server error while building analytics' });
+  }
+};
+
+/**
  * Get unique clinic & doctor names for autocomplete
  */
 exports.getAutocompleteData = async (req, res) => {

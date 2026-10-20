@@ -89,6 +89,7 @@ exports.loginEmployee = async (req, res) => {
         email: employee.email,
         accountType: employee.accountType,
       empType: employee?.empType,
+      canViewInsights: employee.canViewInsights,
       }
     });
   } catch (err) {
