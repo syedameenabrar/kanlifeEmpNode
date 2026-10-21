@@ -126,7 +126,7 @@ router.post('/login', async (req, res) => {
       ppeEquipmentType: user?.ppeEquipmentType,
       state: user?.state,
       city: user?.city,
-      canViewInsights: user?.accountType === 'admin' || user?.accountType === 'sub-admin' ? true : !!user?.canViewInsights
+      canViewInsights: ['admin', 'superAdmin', 'sub-admin'].includes(user?.accountType) ? true : !!user?.canViewInsights
     };
 
     res.json({
