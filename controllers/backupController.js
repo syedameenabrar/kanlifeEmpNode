@@ -32,18 +32,45 @@ async function buildBackupPayload() {
 
 /**
  * Download a full JSON snapshot of every collection in the database.
+ *
+ * Streams documents one at a time via a cursor instead of loading every
+ * collection into memory and building one giant pretty-printed string -
+ * on a memory-constrained host, buffering the whole (and growing) backup
+ * in RAM before sending it was crashing the process mid-response, which
+ * shows up client-side as a 200 OK that still fails (connection reset
+ * partway through the body).
  */
 exports.exportDatabase = async (req, res) => {
-  try {
-    const payload = await buildBackupPayload();
-    const filename = `kanlife-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  const filename = `kanlife-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.status(200).send(JSON.stringify(payload, null, 2));
+  try {
+    res.write(`{"exportedAt":${JSON.stringify(new Date().toISOString())},"collections":{`);
+
+    const keys = Object.keys(COLLECTIONS);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      res.write(`${JSON.stringify(key)}:[`);
+
+      let isFirst = true;
+      const cursor = COLLECTIONS[key].find().lean().cursor();
+      for await (const doc of cursor) {
+        res.write(`${isFirst ? '' : ','}${JSON.stringify(doc)}`);
+        isFirst = false;
+      }
+
+      res.write(`]${i < keys.length - 1 ? ',' : ''}`);
+    }
+
+    res.end('}}');
   } catch (err) {
     console.error('Error exporting database:', err);
-    res.status(500).json({ message: 'Failed to export database' });
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Failed to export database' });
+    } else {
+      res.end();
+    }
   }
 };
 
