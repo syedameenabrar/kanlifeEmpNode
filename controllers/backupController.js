@@ -38,17 +38,26 @@ async function buildBackupPayload() {
  * precisely so an exact size never has to be known up front.
  */
 async function estimateExportSize() {
-  let total = 0;
-  for (const Model of Object.values(COLLECTIONS)) {
-    const [count, sample] = await Promise.all([
-      Model.estimatedDocumentCount(),
-      Model.findOne().lean()
-    ]);
-    const sampleSize = sample ? Buffer.byteLength(JSON.stringify(sample)) : 0;
-    total += count * sampleSize;
-  }
-  return total;
+  const perCollection = await Promise.all(
+    Object.values(COLLECTIONS).map(async (Model) => {
+      const [count, sample] = await Promise.all([
+        Model.estimatedDocumentCount(),
+        Model.findOne().lean()
+      ]);
+      const sampleSize = sample ? Buffer.byteLength(JSON.stringify(sample)) : 0;
+      return count * sampleSize;
+    })
+  );
+  return perCollection.reduce((sum, n) => sum + n, 0);
 }
+
+// Flushing every document as its own res.write() turned a ~6MB export into
+// thousands of tiny chunked-encoding writes, which was far slower over the
+// network (and through any reverse proxy in front of the app) than one
+// write per ~64KB batch. Batching keeps memory bounded (never more than one
+// batch of documents in RAM, same reason the per-document cursor was
+// introduced) while cutting write/flush overhead by orders of magnitude.
+const WRITE_BATCH_BYTES = 64 * 1024;
 
 /**
  * Download a full JSON snapshot of every collection in the database.
@@ -69,24 +78,29 @@ exports.exportDatabase = async (req, res) => {
     const estimatedSize = await estimateExportSize();
     res.setHeader('X-Estimated-Size', String(estimatedSize));
 
-    res.write(`{"exportedAt":${JSON.stringify(new Date().toISOString())},"collections":{`);
+    let batch = `{"exportedAt":${JSON.stringify(new Date().toISOString())},"collections":{`;
 
     const keys = Object.keys(COLLECTIONS);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
-      res.write(`${JSON.stringify(key)}:[`);
+      batch += `${JSON.stringify(key)}:[`;
 
       let isFirst = true;
       const cursor = COLLECTIONS[key].find().lean().cursor();
       for await (const doc of cursor) {
-        res.write(`${isFirst ? '' : ','}${JSON.stringify(doc)}`);
+        batch += `${isFirst ? '' : ','}${JSON.stringify(doc)}`;
         isFirst = false;
+
+        if (batch.length >= WRITE_BATCH_BYTES) {
+          res.write(batch);
+          batch = '';
+        }
       }
 
-      res.write(`]${i < keys.length - 1 ? ',' : ''}`);
+      batch += `]${i < keys.length - 1 ? ',' : ''}`;
     }
 
-    res.end('}}');
+    res.end(`${batch}}}`);
   } catch (err) {
     console.error('Error exporting database:', err);
     if (!res.headersSent) {
