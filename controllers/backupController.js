@@ -31,6 +31,26 @@ async function buildBackupPayload() {
 }
 
 /**
+ * Rough total export size, used only to drive the client's download
+ * progress bar - sampling one document per collection and multiplying by
+ * an estimated count is cheap and close enough for a progress estimate.
+ * Never used as the real Content-Length: the export is streamed (chunked)
+ * precisely so an exact size never has to be known up front.
+ */
+async function estimateExportSize() {
+  let total = 0;
+  for (const Model of Object.values(COLLECTIONS)) {
+    const [count, sample] = await Promise.all([
+      Model.estimatedDocumentCount(),
+      Model.findOne().lean()
+    ]);
+    const sampleSize = sample ? Buffer.byteLength(JSON.stringify(sample)) : 0;
+    total += count * sampleSize;
+  }
+  return total;
+}
+
+/**
  * Download a full JSON snapshot of every collection in the database.
  *
  * Streams documents one at a time via a cursor instead of loading every
@@ -46,6 +66,9 @@ exports.exportDatabase = async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
   try {
+    const estimatedSize = await estimateExportSize();
+    res.setHeader('X-Estimated-Size', String(estimatedSize));
+
     res.write(`{"exportedAt":${JSON.stringify(new Date().toISOString())},"collections":{`);
 
     const keys = Object.keys(COLLECTIONS);

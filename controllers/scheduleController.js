@@ -647,6 +647,76 @@ exports.getScheduleAnalytics = async (req, res) => {
             { $project: { _id: 0, city: 1, state: 1, visits: 1, patients: 1, prescriptions: 1 } }
           ],
 
+          weakCities: [
+            ...dateMatchStage,
+            { $match: { cityName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$cityName' } } },
+                city: { $first: { $trim: { input: '$cityName' } } },
+                state: { $first: '$state' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            // cityName is free text and picks up non-visit placeholders
+            // ("Weekly off", "Camp Cancelled", "NA", "...") - those always
+            // have 0 patients, so excluding zero-patient groups keeps this
+            // list to cities that were actually visited but underperformed.
+            { $match: { patients: { $gt: 0 } } },
+            { $sort: { patients: 1 } },
+            { $limit: 8 },
+            { $project: { _id: 0, city: 1, state: 1, visits: 1, patients: 1, prescriptions: 1 } }
+          ],
+
+          weakEmployees: [
+            ...dateMatchStage,
+            { $match: { employeeName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$employeeId',
+                employeeName: { $first: '$employeeName' },
+                organizationName: { $first: '$organizationName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' },
+                uniqueDoctors: { $addToSet: { $toLower: { $trim: { input: '$doctorName' } } } }
+              }
+            },
+            {
+              $project: {
+                _id: 0,
+                employeeId: '$_id',
+                employeeName: 1,
+                organizationName: 1,
+                visits: 1,
+                patients: 1,
+                prescriptions: 1,
+                doctorsCovered: { $size: '$uniqueDoctors' }
+              }
+            },
+            { $match: { patients: { $gt: 0 } } },
+            { $sort: { patients: 1 } },
+            { $limit: 8 }
+          ],
+
+          weakSpecialities: [
+            ...dateMatchStage,
+            { $match: { doctorSpeciality: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$doctorSpeciality',
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' }
+              }
+            },
+            { $match: { patients: { $gt: 0 } } },
+            { $sort: { patients: 1 } },
+            { $limit: 5 },
+            { $project: { _id: 0, speciality: '$_id', visits: 1, patients: 1 } }
+          ],
+
           topDoctors: [
             ...dateMatchStage,
             { $match: { doctorName: { $nin: [null, ''] } } },
@@ -762,7 +832,10 @@ exports.getScheduleAnalytics = async (req, res) => {
       topDoctors: result.topDoctors,
       topEmployees: result.topEmployees,
       byOrganization: result.byOrganization,
-      bySpeciality: result.bySpeciality
+      bySpeciality: result.bySpeciality,
+      weakCities: result.weakCities,
+      weakEmployees: result.weakEmployees,
+      weakSpecialities: result.weakSpecialities
     });
   } catch (error) {
     console.error('Error building schedule analytics:', error);

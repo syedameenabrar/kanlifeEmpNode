@@ -19,7 +19,10 @@ const { startBackupEmailScheduler } = require('./scheduler');
 
 
 const app = express();
-app.use(cors());
+// Expose-Headers so the frontend's download-progress bar can read the
+// estimated export size off a custom response header (browsers hide any
+// header the server doesn't explicitly expose for cross-origin requests).
+app.use(cors({ exposedHeaders: ['X-Estimated-Size'] }));
 app.use(express.json());
 
 // Routes
