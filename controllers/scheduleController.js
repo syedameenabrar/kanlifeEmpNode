@@ -1,4 +1,5 @@
 const Scheduleing = require('../models/Schedule');
+const Employee = require('../models/Employee');
 
 /**
  * Add new schedule (Admin creates)
@@ -537,6 +538,14 @@ exports.getScheduleAnalytics = async (req, res) => {
     const hasDateFilter = Object.keys(dateRange).length > 0;
     const dateMatchStage = hasDateFilter ? [{ $match: { _effectiveDate: dateRange } }] : [];
 
+    // Fixed to the real current month regardless of the month/year filter -
+    // same "stays put while filters drill down" reasoning as monthlyTrend -
+    // so "new vs returning doctors" always answers "this month", not
+    // whatever arbitrary period happens to be selected.
+    const now = new Date();
+    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const thisMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
     const numericField = name => ({
       $convert: { input: `$${name}`, to: 'double', onError: 0, onNull: 0 }
     });
@@ -717,6 +726,50 @@ exports.getScheduleAnalytics = async (req, res) => {
             { $project: { _id: 0, speciality: '$_id', visits: 1, patients: 1 } }
           ],
 
+          // Doctors who had a real visit history (2+ visits) but haven't
+          // been seen in a while - intentionally ignores the date/month
+          // filter (like monthlyTrend) since restricting to one period
+          // would hide the very doctors who have no visits in that period.
+          goingQuietDoctors: [
+            { $match: { doctorName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$doctorName' } } },
+                doctorName: { $first: '$doctorName' },
+                speciality: { $first: '$doctorSpeciality' },
+                clinicName: { $first: '$clinicName' },
+                cityName: { $first: '$cityName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                lastVisit: { $max: '$_effectiveDate' }
+              }
+            },
+            { $match: { visits: { $gte: 2 } } },
+            {
+              $addFields: {
+                daysSinceLastVisit: {
+                  $round: [{ $divide: [{ $subtract: ['$$NOW', '$lastVisit'] }, 1000 * 60 * 60 * 24] }, 0]
+                }
+              }
+            },
+            { $match: { daysSinceLastVisit: { $gte: 30 } } },
+            { $sort: { daysSinceLastVisit: -1 } },
+            { $limit: 10 },
+            {
+              $project: {
+                _id: 0,
+                doctorName: 1,
+                speciality: 1,
+                clinicName: 1,
+                cityName: 1,
+                visits: 1,
+                patients: 1,
+                lastVisit: 1,
+                daysSinceLastVisit: 1
+              }
+            }
+          ],
+
           topDoctors: [
             ...dateMatchStage,
             { $match: { doctorName: { $nin: [null, ''] } } },
@@ -776,6 +829,94 @@ exports.getScheduleAnalytics = async (req, res) => {
             { $limit: 10 }
           ],
 
+          // Clinics as their own dimension - several doctors often share one
+          // clinic, so this surfaces "one stop, multiple doctors" locations
+          // that the doctor-level leaderboard alone doesn't show.
+          topClinics: [
+            ...dateMatchStage,
+            { $match: { clinicName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$clinicName' } } },
+                clinicName: { $first: '$clinicName' },
+                cityName: { $first: '$cityName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' },
+                uniqueDoctors: { $addToSet: { $toLower: { $trim: { input: '$doctorName' } } } }
+              }
+            },
+            {
+              $project: {
+                _id: 0,
+                clinicName: 1,
+                cityName: 1,
+                visits: 1,
+                patients: 1,
+                prescriptions: 1,
+                doctorsCovered: { $size: '$uniqueDoctors' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 }
+          ],
+
+          // Day-of-week mix within whatever period is selected ($dayOfWeek:
+          // 1=Sunday ... 7=Saturday - reordered to Mon-Sun on the frontend).
+          byDayOfWeek: [
+            ...dateMatchStage,
+            {
+              $group: {
+                _id: { $dayOfWeek: '$_effectiveDate' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' }
+              }
+            },
+            { $sort: { _id: 1 } },
+            { $project: { _id: 0, dayOfWeek: '$_id', visits: 1, patients: 1 } }
+          ],
+
+          // Full visit history per doctor (no date filter) so "new" can be
+          // told apart from "returning" below - a doctor is only "new" if
+          // their very first-ever visit falls inside the current month.
+          doctorFirstEver: [
+            { $match: { doctorName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$doctorName' } } },
+                firstVisit: { $min: '$_effectiveDate' }
+              }
+            }
+          ],
+
+          // Doctors actually visited in the real current month (independent
+          // of the month/year filter, same reasoning as monthlyTrend).
+          doctorsThisMonth: [
+            {
+              $match: {
+                doctorName: { $nin: [null, ''] },
+                _effectiveDate: { $gte: thisMonthStart, $lte: thisMonthEnd }
+              }
+            },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$doctorName' } } },
+                doctorName: { $first: '$doctorName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' }
+              }
+            }
+          ],
+
+          // Distinct employees with any activity in the selected period -
+          // compared against the full employee roster afterward to find
+          // employees with literally zero logged visits (not just low).
+          activeEmployeeIds: [
+            ...dateMatchStage,
+            { $match: { employeeId: { $nin: [null, ''] } } },
+            { $group: { _id: '$employeeId' } }
+          ],
+
           byOrganization: [
             ...dateMatchStage,
             { $match: { organizationName: { $nin: [null, ''] } } },
@@ -812,6 +953,39 @@ exports.getScheduleAnalytics = async (req, res) => {
 
     const [result] = await Scheduleing.aggregate(pipeline);
 
+    // Idle employees: roster members (same org/employee filter as everything
+    // else) with zero entries in activeEmployeeIds for the selected period -
+    // a blind spot the "weakest employee" leaderboard can't see, since that
+    // one only ever lists employees who logged at least one visit.
+    const rosterFilter = {};
+    if (organizationId) rosterFilter.organizationId = organizationId;
+    if (employeeId) {
+      const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
+      if (employeeIds.length) rosterFilter._id = { $in: employeeIds };
+    }
+    const roster = await Employee.find(rosterFilter).select('name organizationName').lean();
+    const activeIdSet = new Set((result.activeEmployeeIds || []).map(e => e._id));
+    const idleEmployees = roster
+      .filter(e => !activeIdSet.has(e._id.toString()))
+      .map(e => ({ employeeId: e._id.toString(), employeeName: e.name, organizationName: e.organizationName }));
+
+    // New vs returning doctors this month (see doctorFirstEver/doctorsThisMonth above).
+    const firstEverMap = new Map((result.doctorFirstEver || []).map(d => [d._id, d.firstVisit]));
+    let newDoctorsCount = 0;
+    let returningDoctorsCount = 0;
+    const newDoctors = [];
+    for (const d of result.doctorsThisMonth || []) {
+      const firstEver = firstEverMap.get(d._id);
+      const isNew = !firstEver || new Date(firstEver) >= thisMonthStart;
+      if (isNew) {
+        newDoctorsCount++;
+        newDoctors.push({ doctorName: d.doctorName, visits: d.visits, patients: d.patients });
+      } else {
+        returningDoctorsCount++;
+      }
+    }
+    newDoctors.sort((a, b) => b.patients - a.patients);
+
     res.status(200).json({
       filters: { organizationId, employeeId, doctorSpeciality, state, cityName, search, month, year, startDate, endDate },
       summary: result.summary[0] || {
@@ -835,7 +1009,16 @@ exports.getScheduleAnalytics = async (req, res) => {
       bySpeciality: result.bySpeciality,
       weakCities: result.weakCities,
       weakEmployees: result.weakEmployees,
-      weakSpecialities: result.weakSpecialities
+      weakSpecialities: result.weakSpecialities,
+      goingQuietDoctors: result.goingQuietDoctors,
+      topClinics: result.topClinics,
+      byDayOfWeek: result.byDayOfWeek,
+      idleEmployees,
+      newVsReturningDoctors: {
+        newCount: newDoctorsCount,
+        returningCount: returningDoctorsCount,
+        newDoctors: newDoctors.slice(0, 10)
+      }
     });
   } catch (error) {
     console.error('Error building schedule analytics:', error);
