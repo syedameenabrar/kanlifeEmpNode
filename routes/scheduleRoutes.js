@@ -1,5 +1,5 @@
 const express = require('express');
-const { addSchedule, getAllSchedules, getScheduleById, updatePpeSchedule , getSchedulesByEmployeeId, getSchedulesByOrganizationId, getFilteredSchedules, deleteSchedule, getAutocompleteData, getScheduleAnalytics, getScheduleFilterOptions} = require('../controllers/scheduleController');
+const { addSchedule, getAllSchedules, getScheduleById, updatePpeSchedule , getSchedulesByEmployeeId, getSchedulesByOrganizationId, getFilteredSchedules, deleteSchedule, getAutocompleteData, getScheduleAnalytics, getScheduleAnalyticsExtras, getScheduleFilterOptions} = require('../controllers/scheduleController');
 const router = express.Router();
 
 // Admin adds schedule
@@ -10,6 +10,7 @@ router.get('/filter', getFilteredSchedules);
 
 // Analytics dashboard aggregates + filter dropdown options
 router.get('/analytics', getScheduleAnalytics);
+router.get('/analytics-extras', getScheduleAnalyticsExtras);
 router.get('/filter-options', getScheduleFilterOptions);
 
 // GET all schedule

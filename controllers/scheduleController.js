@@ -436,9 +436,162 @@ exports.getScheduleFilterOptions = async (req, res) => {
   }
 };
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
 /**
- * Analytics for the dashboard: totals, monthly trend, geography (state/city)
- * and leaderboards (doctors/employees/organizations/specialities).
+ * Shared filter-parsing for both analytics endpoints below, so the two
+ * aggregations stay in sync on exactly what "the current filters" means
+ * without duplicating ~80 lines of match-building logic.
+ */
+function buildScheduleFilters(query) {
+  const {
+    organizationId,
+    employeeId,
+    doctorSpeciality,
+    state,
+    cityName,
+    search,
+    month,
+    year,
+    startDate,
+    endDate
+  } = query;
+
+  // Filters applied to every facet (geography/people/search, no date)
+  const baseMatch = {};
+
+  if (organizationId) {
+    baseMatch.organizationId = organizationId;
+  }
+
+  if (employeeId) {
+    const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
+    if (employeeIds.length) baseMatch.employeeId = { $in: employeeIds };
+  }
+
+  const andConditions = [];
+
+  const orConditions = [];
+  if (cityName) {
+    cityName.split(',').map(c => c.trim()).filter(Boolean).forEach(city => {
+      orConditions.push({ cityName: { $regex: city, $options: 'i' } });
+    });
+  }
+  if (state) {
+    state.split(',').map(s => s.trim()).filter(Boolean).forEach(st => {
+      orConditions.push({ state: { $regex: `^${st}$`, $options: 'i' } });
+    });
+  }
+  if (orConditions.length) andConditions.push({ $or: orConditions });
+
+  if (doctorSpeciality) {
+    const specialities = doctorSpeciality.split(',').map(s => s.trim()).filter(Boolean);
+    if (specialities.length) {
+      baseMatch.doctorSpeciality = {
+        $in: specialities.map(s => new RegExp(`^\\s*${s}\\s*$`, 'i'))
+      };
+    }
+  }
+
+  if (search && search.trim()) {
+    const regex = new RegExp(search.trim(), 'i');
+    andConditions.push({
+      $or: [
+        { clinicName: regex },
+        { doctorName: regex },
+        { doctorSpeciality: regex },
+        { cityName: regex },
+        { state: regex },
+        { clinicAddress: regex },
+        { employeeName: regex },
+        { organizationName: regex }
+      ]
+    });
+  }
+
+  if (andConditions.length) baseMatch.$and = andConditions;
+
+  // Date filter - month+year takes priority over a raw start/end range
+  let dateRange = {};
+  if (month && year) {
+    const y = parseInt(year, 10);
+    const m = parseInt(month, 10); // 1-12
+    dateRange = {
+      $gte: new Date(y, m - 1, 1, 0, 0, 0, 0),
+      $lte: new Date(y, m, 0, 23, 59, 59, 999)
+    };
+  } else if (startDate || endDate) {
+    if (startDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      dateRange.$gte = start;
+    }
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateRange.$lte = end;
+    }
+  }
+  const hasDateFilter = Object.keys(dateRange).length > 0;
+  const dateMatchStage = hasDateFilter ? [{ $match: { _effectiveDate: dateRange } }] : [];
+
+  // "New vs returning doctors" tracks whichever calendar month is actually
+  // selected via the month/year filter; with no month filter (or a raw
+  // start/endDate range, which isn't a single calendar month) it falls
+  // back to the real current month, same as before.
+  const now = new Date();
+  let periodStart;
+  let periodEnd;
+  let periodLabel;
+  if (month && year) {
+    periodStart = dateRange.$gte;
+    periodEnd = dateRange.$lte;
+    periodLabel = `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
+  } else {
+    periodStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    periodLabel = `${MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}`;
+  }
+
+  const numericField = name => ({
+    $convert: { input: `$${name}`, to: 'double', onError: 0, onNull: 0 }
+  });
+
+  const addFieldsStage = {
+    $addFields: {
+      _effectiveDate: { $ifNull: ['$ppeDate', '$createdAt'] },
+      _patients: numericField('noOfPatients'),
+      _patientsLsm: numericField('noOfPatientsLsm'),
+      _patientsCap: numericField('noOfPatientsCap'),
+      _prescriptions: numericField('noOfPrescriptions')
+    }
+  };
+
+  return {
+    filtersEcho: { organizationId, employeeId, doctorSpeciality, state, cityName, search, month, year, startDate, endDate },
+    organizationId,
+    employeeId,
+    baseMatch,
+    dateMatchStage,
+    periodStart,
+    periodEnd,
+    periodLabel,
+    addFieldsStage
+  };
+}
+
+/**
+ * Core analytics for the dashboard: totals, monthly trend, geography
+ * (state/city) and leaderboards (doctors/employees/organizations/
+ * specialities). Kept deliberately lean (same facet count as the original
+ * version of this endpoint) so the main dashboard view loads quickly - the
+ * "Needs Attention" / "Going Quiet" / "Idle" / "Top Clinics" / "Busiest
+ * Days" / "New vs Returning" extras each require their own full-collection
+ * scan and are served by the separate, slower `getScheduleAnalyticsExtras`
+ * below instead, so they don't block the first paint of this page.
  *
  * The monthly trend facet intentionally ignores the month/year/date filters
  * (it always shows the last 12 months) so the trend chart stays visible for
@@ -447,133 +600,10 @@ exports.getScheduleFilterOptions = async (req, res) => {
  */
 exports.getScheduleAnalytics = async (req, res) => {
   try {
-    const {
-      organizationId,
-      employeeId,
-      doctorSpeciality,
-      state,
-      cityName,
-      search,
-      month,
-      year,
-      startDate,
-      endDate
-    } = req.query;
-
-    // Filters applied to every facet (geography/people/search, no date)
-    const baseMatch = {};
-
-    if (organizationId) {
-      baseMatch.organizationId = organizationId;
-    }
-
-    if (employeeId) {
-      const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
-      if (employeeIds.length) baseMatch.employeeId = { $in: employeeIds };
-    }
-
-    const andConditions = [];
-
-    const orConditions = [];
-    if (cityName) {
-      cityName.split(',').map(c => c.trim()).filter(Boolean).forEach(city => {
-        orConditions.push({ cityName: { $regex: city, $options: 'i' } });
-      });
-    }
-    if (state) {
-      state.split(',').map(s => s.trim()).filter(Boolean).forEach(st => {
-        orConditions.push({ state: { $regex: `^${st}$`, $options: 'i' } });
-      });
-    }
-    if (orConditions.length) andConditions.push({ $or: orConditions });
-
-    if (doctorSpeciality) {
-      const specialities = doctorSpeciality.split(',').map(s => s.trim()).filter(Boolean);
-      if (specialities.length) {
-        baseMatch.doctorSpeciality = {
-          $in: specialities.map(s => new RegExp(`^\\s*${s}\\s*$`, 'i'))
-        };
-      }
-    }
-
-    if (search && search.trim()) {
-      const regex = new RegExp(search.trim(), 'i');
-      andConditions.push({
-        $or: [
-          { clinicName: regex },
-          { doctorName: regex },
-          { doctorSpeciality: regex },
-          { cityName: regex },
-          { state: regex },
-          { clinicAddress: regex },
-          { employeeName: regex },
-          { organizationName: regex }
-        ]
-      });
-    }
-
-    if (andConditions.length) baseMatch.$and = andConditions;
-
-    // Date filter - month+year takes priority over a raw start/end range
-    let dateRange = {};
-    if (month && year) {
-      const y = parseInt(year, 10);
-      const m = parseInt(month, 10); // 1-12
-      dateRange = {
-        $gte: new Date(y, m - 1, 1, 0, 0, 0, 0),
-        $lte: new Date(y, m, 0, 23, 59, 59, 999)
-      };
-    } else if (startDate || endDate) {
-      if (startDate) {
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        dateRange.$gte = start;
-      }
-      if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        dateRange.$lte = end;
-      }
-    }
-    const hasDateFilter = Object.keys(dateRange).length > 0;
-    const dateMatchStage = hasDateFilter ? [{ $match: { _effectiveDate: dateRange } }] : [];
-
-    // "New vs returning doctors" tracks whichever calendar month is actually
-    // selected via the month/year filter; with no month filter (or a raw
-    // start/endDate range, which isn't a single calendar month) it falls
-    // back to the real current month, same as before.
-    const MONTH_NAMES = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    const now = new Date();
-    let periodStart;
-    let periodEnd;
-    let periodLabel;
-    if (month && year) {
-      periodStart = dateRange.$gte;
-      periodEnd = dateRange.$lte;
-      periodLabel = `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
-    } else {
-      periodStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-      periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-      periodLabel = `${MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}`;
-    }
-
-    const numericField = name => ({
-      $convert: { input: `$${name}`, to: 'double', onError: 0, onNull: 0 }
-    });
+    const { baseMatch, dateMatchStage, addFieldsStage, filtersEcho } = buildScheduleFilters(req.query);
 
     const pipeline = [
-      {
-        $addFields: {
-          _effectiveDate: { $ifNull: ['$ppeDate', '$createdAt'] },
-          _patients: numericField('noOfPatients'),
-          _patientsLsm: numericField('noOfPatientsLsm'),
-          _patientsCap: numericField('noOfPatientsCap'),
-          _prescriptions: numericField('noOfPrescriptions')
-        }
-      },
+      addFieldsStage,
       { $match: baseMatch },
       {
         $facet: {
@@ -670,6 +700,165 @@ exports.getScheduleAnalytics = async (req, res) => {
             { $project: { _id: 0, city: 1, state: 1, visits: 1, patients: 1, prescriptions: 1 } }
           ],
 
+          topDoctors: [
+            ...dateMatchStage,
+            { $match: { doctorName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: { $toLower: { $trim: { input: '$doctorName' } } },
+                doctorName: { $first: '$doctorName' },
+                speciality: { $first: '$doctorSpeciality' },
+                clinicName: { $first: '$clinicName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 },
+            {
+              $project: {
+                _id: 0,
+                doctorName: 1,
+                speciality: 1,
+                clinicName: 1,
+                visits: 1,
+                patients: 1,
+                prescriptions: 1
+              }
+            }
+          ],
+
+          topEmployees: [
+            ...dateMatchStage,
+            { $match: { employeeName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$employeeId',
+                employeeName: { $first: '$employeeName' },
+                organizationName: { $first: '$organizationName' },
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' },
+                uniqueDoctors: { $addToSet: { $toLower: { $trim: { input: '$doctorName' } } } }
+              }
+            },
+            {
+              $project: {
+                _id: 0,
+                employeeId: '$_id',
+                employeeName: 1,
+                organizationName: 1,
+                visits: 1,
+                patients: 1,
+                prescriptions: 1,
+                doctorsCovered: { $size: '$uniqueDoctors' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 }
+          ],
+
+          byOrganization: [
+            ...dateMatchStage,
+            { $match: { organizationName: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$organizationName',
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' },
+                prescriptions: { $sum: '$_prescriptions' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 },
+            { $project: { _id: 0, organizationName: '$_id', visits: 1, patients: 1, prescriptions: 1 } }
+          ],
+
+          bySpeciality: [
+            ...dateMatchStage,
+            { $match: { doctorSpeciality: { $nin: [null, ''] } } },
+            {
+              $group: {
+                _id: '$doctorSpeciality',
+                visits: { $sum: 1 },
+                patients: { $sum: '$_patients' }
+              }
+            },
+            { $sort: { patients: -1 } },
+            { $limit: 10 },
+            { $project: { _id: 0, speciality: '$_id', visits: 1, patients: 1 } }
+          ]
+        }
+      }
+    ];
+
+    const [result] = await Scheduleing.aggregate(pipeline);
+
+    // Attach each employee's home city/state (from their profile, not the
+    // messy free-text Schedule.cityName) so the leaderboard and AI Insights
+    // can say which city a top employee is based in.
+    const rosterFilter = {};
+    if (filtersEcho.organizationId) rosterFilter.organizationId = filtersEcho.organizationId;
+    if (filtersEcho.employeeId) {
+      const employeeIds = filtersEcho.employeeId.split(',').map(id => id.trim()).filter(Boolean);
+      if (employeeIds.length) rosterFilter._id = { $in: employeeIds };
+    }
+    const roster = await Employee.find(rosterFilter).select('name city state').lean();
+    const rosterById = new Map(roster.map(e => [e._id.toString(), e]));
+    const topEmployeesWithLocation = (result.topEmployees || []).map(e => ({
+      ...e,
+      city: rosterById.get(e.employeeId)?.city || null,
+      state: rosterById.get(e.employeeId)?.state || null
+    }));
+
+    res.status(200).json({
+      filters: filtersEcho,
+      summary: result.summary[0] || {
+        totalVisits: 0,
+        totalPatients: 0,
+        totalPatientsLsm: 0,
+        totalPatientsCap: 0,
+        totalPrescriptions: 0,
+        totalDoctors: 0,
+        totalClinics: 0,
+        totalEmployees: 0,
+        totalStates: 0,
+        totalCities: 0
+      },
+      monthlyTrend: result.monthlyTrend,
+      byState: result.byState,
+      byCity: result.byCity,
+      topDoctors: result.topDoctors,
+      topEmployees: topEmployeesWithLocation,
+      byOrganization: result.byOrganization,
+      bySpeciality: result.bySpeciality
+    });
+  } catch (error) {
+    console.error('Error building schedule analytics:', error);
+    res.status(500).json({ message: 'Server error while building analytics' });
+  }
+};
+
+/**
+ * Secondary analytics for the dashboard: everything that needs its own
+ * full-collection scan (Needs Attention signals, Doctors Going Quiet, Top
+ * Clinics, Busiest Days, Idle employees, New vs Returning doctors). Split
+ * out from `getScheduleAnalytics` above specifically so the main dashboard
+ * view isn't stuck behind all of this - the frontend fires this request in
+ * parallel and fills in these sections as they arrive, without blocking the
+ * main loading spinner on them.
+ */
+exports.getScheduleAnalyticsExtras = async (req, res) => {
+  try {
+    const { baseMatch, dateMatchStage, addFieldsStage, filtersEcho, periodStart, periodEnd, periodLabel } =
+      buildScheduleFilters(req.query);
+
+    const pipeline = [
+      addFieldsStage,
+      { $match: baseMatch },
+      {
+        $facet: {
           weakCities: [
             ...dateMatchStage,
             { $match: { cityName: { $nin: [null, ''] } } },
@@ -784,65 +973,6 @@ exports.getScheduleAnalytics = async (req, res) => {
             }
           ],
 
-          topDoctors: [
-            ...dateMatchStage,
-            { $match: { doctorName: { $nin: [null, ''] } } },
-            {
-              $group: {
-                _id: { $toLower: { $trim: { input: '$doctorName' } } },
-                doctorName: { $first: '$doctorName' },
-                speciality: { $first: '$doctorSpeciality' },
-                clinicName: { $first: '$clinicName' },
-                visits: { $sum: 1 },
-                patients: { $sum: '$_patients' },
-                prescriptions: { $sum: '$_prescriptions' }
-              }
-            },
-            { $sort: { patients: -1 } },
-            { $limit: 10 },
-            {
-              $project: {
-                _id: 0,
-                doctorName: 1,
-                speciality: 1,
-                clinicName: 1,
-                visits: 1,
-                patients: 1,
-                prescriptions: 1
-              }
-            }
-          ],
-
-          topEmployees: [
-            ...dateMatchStage,
-            { $match: { employeeName: { $nin: [null, ''] } } },
-            {
-              $group: {
-                _id: '$employeeId',
-                employeeName: { $first: '$employeeName' },
-                organizationName: { $first: '$organizationName' },
-                visits: { $sum: 1 },
-                patients: { $sum: '$_patients' },
-                prescriptions: { $sum: '$_prescriptions' },
-                uniqueDoctors: { $addToSet: { $toLower: { $trim: { input: '$doctorName' } } } }
-              }
-            },
-            {
-              $project: {
-                _id: 0,
-                employeeId: '$_id',
-                employeeName: 1,
-                organizationName: 1,
-                visits: 1,
-                patients: 1,
-                prescriptions: 1,
-                doctorsCovered: { $size: '$uniqueDoctors' }
-              }
-            },
-            { $sort: { patients: -1 } },
-            { $limit: 10 }
-          ],
-
           // Clinics as their own dimension - several doctors often share one
           // clinic, so this surfaces "one stop, multiple doctors" locations
           // that the doctor-level leaderboard alone doesn't show.
@@ -928,37 +1058,6 @@ exports.getScheduleAnalytics = async (req, res) => {
             ...dateMatchStage,
             { $match: { employeeId: { $nin: [null, ''] } } },
             { $group: { _id: '$employeeId' } }
-          ],
-
-          byOrganization: [
-            ...dateMatchStage,
-            { $match: { organizationName: { $nin: [null, ''] } } },
-            {
-              $group: {
-                _id: '$organizationName',
-                visits: { $sum: 1 },
-                patients: { $sum: '$_patients' },
-                prescriptions: { $sum: '$_prescriptions' }
-              }
-            },
-            { $sort: { patients: -1 } },
-            { $limit: 10 },
-            { $project: { _id: 0, organizationName: '$_id', visits: 1, patients: 1, prescriptions: 1 } }
-          ],
-
-          bySpeciality: [
-            ...dateMatchStage,
-            { $match: { doctorSpeciality: { $nin: [null, ''] } } },
-            {
-              $group: {
-                _id: '$doctorSpeciality',
-                visits: { $sum: 1 },
-                patients: { $sum: '$_patients' }
-              }
-            },
-            { $sort: { patients: -1 } },
-            { $limit: 10 },
-            { $project: { _id: 0, speciality: '$_id', visits: 1, patients: 1 } }
           ]
         }
       }
@@ -971,26 +1070,16 @@ exports.getScheduleAnalytics = async (req, res) => {
     // a blind spot the "weakest employee" leaderboard can't see, since that
     // one only ever lists employees who logged at least one visit.
     const rosterFilter = {};
-    if (organizationId) rosterFilter.organizationId = organizationId;
-    if (employeeId) {
-      const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
+    if (filtersEcho.organizationId) rosterFilter.organizationId = filtersEcho.organizationId;
+    if (filtersEcho.employeeId) {
+      const employeeIds = filtersEcho.employeeId.split(',').map(id => id.trim()).filter(Boolean);
       if (employeeIds.length) rosterFilter._id = { $in: employeeIds };
     }
-    const roster = await Employee.find(rosterFilter).select('name organizationName city state').lean();
+    const roster = await Employee.find(rosterFilter).select('name organizationName').lean();
     const activeIdSet = new Set((result.activeEmployeeIds || []).map(e => e._id));
     const idleEmployees = roster
       .filter(e => !activeIdSet.has(e._id.toString()))
       .map(e => ({ employeeId: e._id.toString(), employeeName: e.name, organizationName: e.organizationName }));
-
-    // Attach each employee's home city/state (from their profile, not the
-    // messy free-text Schedule.cityName) so the leaderboard and AI Insights
-    // can say which city a top employee is based in.
-    const rosterById = new Map(roster.map(e => [e._id.toString(), e]));
-    const topEmployeesWithLocation = (result.topEmployees || []).map(e => ({
-      ...e,
-      city: rosterById.get(e.employeeId)?.city || null,
-      state: rosterById.get(e.employeeId)?.state || null
-    }));
 
     // New vs returning doctors for the selected period (see doctorFirstEver/doctorsThisMonth above).
     const firstEverMap = new Map((result.doctorFirstEver || []).map(d => [d._id, d.firstVisit]));
@@ -1010,26 +1099,7 @@ exports.getScheduleAnalytics = async (req, res) => {
     newDoctors.sort((a, b) => b.patients - a.patients);
 
     res.status(200).json({
-      filters: { organizationId, employeeId, doctorSpeciality, state, cityName, search, month, year, startDate, endDate },
-      summary: result.summary[0] || {
-        totalVisits: 0,
-        totalPatients: 0,
-        totalPatientsLsm: 0,
-        totalPatientsCap: 0,
-        totalPrescriptions: 0,
-        totalDoctors: 0,
-        totalClinics: 0,
-        totalEmployees: 0,
-        totalStates: 0,
-        totalCities: 0
-      },
-      monthlyTrend: result.monthlyTrend,
-      byState: result.byState,
-      byCity: result.byCity,
-      topDoctors: result.topDoctors,
-      topEmployees: topEmployeesWithLocation,
-      byOrganization: result.byOrganization,
-      bySpeciality: result.bySpeciality,
+      filters: filtersEcho,
       weakCities: result.weakCities,
       weakEmployees: result.weakEmployees,
       weakSpecialities: result.weakSpecialities,
@@ -1045,8 +1115,8 @@ exports.getScheduleAnalytics = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error building schedule analytics:', error);
-    res.status(500).json({ message: 'Server error while building analytics' });
+    console.error('Error building schedule analytics extras:', error);
+    res.status(500).json({ message: 'Server error while building analytics extras' });
   }
 };
 
