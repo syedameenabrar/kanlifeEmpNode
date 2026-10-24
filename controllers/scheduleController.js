@@ -538,13 +538,27 @@ exports.getScheduleAnalytics = async (req, res) => {
     const hasDateFilter = Object.keys(dateRange).length > 0;
     const dateMatchStage = hasDateFilter ? [{ $match: { _effectiveDate: dateRange } }] : [];
 
-    // Fixed to the real current month regardless of the month/year filter -
-    // same "stays put while filters drill down" reasoning as monthlyTrend -
-    // so "new vs returning doctors" always answers "this month", not
-    // whatever arbitrary period happens to be selected.
+    // "New vs returning doctors" tracks whichever calendar month is actually
+    // selected via the month/year filter; with no month filter (or a raw
+    // start/endDate range, which isn't a single calendar month) it falls
+    // back to the real current month, same as before.
+    const MONTH_NAMES = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
     const now = new Date();
-    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    const thisMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    let periodStart;
+    let periodEnd;
+    let periodLabel;
+    if (month && year) {
+      periodStart = dateRange.$gte;
+      periodEnd = dateRange.$lte;
+      periodLabel = `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
+    } else {
+      periodStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+      periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      periodLabel = `${MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}`;
+    }
 
     const numericField = name => ({
       $convert: { input: `$${name}`, to: 'double', onError: 0, onNull: 0 }
@@ -889,13 +903,12 @@ exports.getScheduleAnalytics = async (req, res) => {
             }
           ],
 
-          // Doctors actually visited in the real current month (independent
-          // of the month/year filter, same reasoning as monthlyTrend).
+          // Doctors visited in the selected period (periodStart/periodEnd above).
           doctorsThisMonth: [
             {
               $match: {
                 doctorName: { $nin: [null, ''] },
-                _effectiveDate: { $gte: thisMonthStart, $lte: thisMonthEnd }
+                _effectiveDate: { $gte: periodStart, $lte: periodEnd }
               }
             },
             {
@@ -963,20 +976,30 @@ exports.getScheduleAnalytics = async (req, res) => {
       const employeeIds = employeeId.split(',').map(id => id.trim()).filter(Boolean);
       if (employeeIds.length) rosterFilter._id = { $in: employeeIds };
     }
-    const roster = await Employee.find(rosterFilter).select('name organizationName').lean();
+    const roster = await Employee.find(rosterFilter).select('name organizationName city state').lean();
     const activeIdSet = new Set((result.activeEmployeeIds || []).map(e => e._id));
     const idleEmployees = roster
       .filter(e => !activeIdSet.has(e._id.toString()))
       .map(e => ({ employeeId: e._id.toString(), employeeName: e.name, organizationName: e.organizationName }));
 
-    // New vs returning doctors this month (see doctorFirstEver/doctorsThisMonth above).
+    // Attach each employee's home city/state (from their profile, not the
+    // messy free-text Schedule.cityName) so the leaderboard and AI Insights
+    // can say which city a top employee is based in.
+    const rosterById = new Map(roster.map(e => [e._id.toString(), e]));
+    const topEmployeesWithLocation = (result.topEmployees || []).map(e => ({
+      ...e,
+      city: rosterById.get(e.employeeId)?.city || null,
+      state: rosterById.get(e.employeeId)?.state || null
+    }));
+
+    // New vs returning doctors for the selected period (see doctorFirstEver/doctorsThisMonth above).
     const firstEverMap = new Map((result.doctorFirstEver || []).map(d => [d._id, d.firstVisit]));
     let newDoctorsCount = 0;
     let returningDoctorsCount = 0;
     const newDoctors = [];
     for (const d of result.doctorsThisMonth || []) {
       const firstEver = firstEverMap.get(d._id);
-      const isNew = !firstEver || new Date(firstEver) >= thisMonthStart;
+      const isNew = !firstEver || new Date(firstEver) >= periodStart;
       if (isNew) {
         newDoctorsCount++;
         newDoctors.push({ doctorName: d.doctorName, visits: d.visits, patients: d.patients });
@@ -1004,7 +1027,7 @@ exports.getScheduleAnalytics = async (req, res) => {
       byState: result.byState,
       byCity: result.byCity,
       topDoctors: result.topDoctors,
-      topEmployees: result.topEmployees,
+      topEmployees: topEmployeesWithLocation,
       byOrganization: result.byOrganization,
       bySpeciality: result.bySpeciality,
       weakCities: result.weakCities,
@@ -1015,6 +1038,7 @@ exports.getScheduleAnalytics = async (req, res) => {
       byDayOfWeek: result.byDayOfWeek,
       idleEmployees,
       newVsReturningDoctors: {
+        periodLabel,
         newCount: newDoctorsCount,
         returningCount: returningDoctorsCount,
         newDoctors: newDoctors.slice(0, 10)
